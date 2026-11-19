@@ -46,29 +46,6 @@ A valid depth buffer is required. You do not need to enable **Use depth for cont
 - **Depth edge tolerance**: lower values protect boundaries more strongly but may leave a sharp fringe; higher values spread blur more freely but can introduce halos.
 - **Protect HUD rectangles from DoF**: protects the two rectangles from section 10 independently of the color filter's mask. HUD pixels may still bleed outside the rectangles because the shader has no HUD-free scene image.
 
-### Default settings to copy
-
-Add these lines to your existing `[FantasyRestored.fx]` section without creating a duplicate section. This block does not automatically enable the DoF technique in ReShade.
-
-```ini
-DoFStrength=0.650000
-DoFAutoFocus=1
-DoFFocusPoint=0.500000,0.500000
-DoFSpotRadius=3.000000
-DoFFocusDepth=0.020000
-DoFFocusRange=0.200000
-DoFNear=1
-DoFFar=1
-DoFNearTransition=0.550000
-DoFFarTransition=1.500000
-DoFNearRadius=4.000000
-DoFFarRadius=5.000000
-DoFQuality=1
-DoFEdgeTolerance=0.040000
-DoFDebug=0
-DoFProtectHUD=0
-```
-
 ### Performance and limitations
 
 DoF adds five passes: 1x1 focus, half-resolution color/depth preparation, far blur, near blur, and full-resolution composition. Its textures add approximately **42.2 MiB at 5120×1440**. Uncheck its technique to skip its processing; allocations may remain present. No specific FPS cost or gain is guaranteed.
