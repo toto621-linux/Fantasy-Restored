@@ -2,6 +2,22 @@
 
 A configurable ReShade shader for an anime/fantasy atmosphere: fresh colors, golden lighting, soft blue shadows, softened textures, subtle cel shading, fine outlines, and fairy-like glow. The default settings are moderate but visible.
 
+## Screenshots
+
+Examples of visual transformation achieved with **Fantasy Restored** :
+
+### Before & After — Comparison 1
+
+| Before | After | Side-by-side Comparaison
+|:------:|:-----:|:-----:|
+| ![Before 01](Shaders/Screenshots/Before-01.png) | ![After 01](Shaders/Screenshots/After-01.png) | ![Comparison 01](Shaders/Screenshots/Comparaison-01.png)
+
+### Before & After — Comparison 2
+
+| Before | After | Side-by-side Comparaison
+|:------:|:-----:|:-----:|
+| ![Before 02](Shaders/Screenshots/Before-02.png) | ![After 02](Shaders/Screenshots/After-02.png) | ![Comparison 02](Shaders/Screenshots/Comparaison-02.png)
+
 ## Installation
 
 1. Copy `Shaders/FantasyRestored.fx` into the shader folder used by ReShade (usually `reshade-shaders/Shaders`).
