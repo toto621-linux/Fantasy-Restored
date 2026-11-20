@@ -67,7 +67,7 @@ Spatial radii expressed in pixels are referenced to 1080p and scale with image h
 
 The shader works from the finished color buffer and, when available, the depth buffer. Cel shading approximates lighting with luminance bands. Painterly filtering can smooth small texture detail, and contours respond to visible contrast and depth rather than object identity. The shader has no access to material IDs, surface normals, or hidden geometry. Highlight restraint can preserve available tonal separation in SDR, while already clipped source detail is unavailable. Light preservation uses an image-based estimate, so coverage varies with the size, brightness, and contrast of the original effect.
 
-DoF uses no temporal history or motion vectors. Transparent hair, particles, and HUD elements can still bleed across depth boundaries, including around manually masked rectangles. The three half-resolution DoF buffers use about 42.2 MiB at 5120 × 1440, excluding the main technique's buffers and ReShade's own resources. See `V5.4_VALIDATION_FR.md` for the Direct3D 11 bench tests on still captures and synthetic depth. Live depth selection and motion behavior depend on the game.
+DoF uses no temporal history or motion vectors. Transparent hair, particles, and HUD elements can still bleed across depth boundaries, including around manually masked rectangles. The three half-resolution DoF buffers use about 42.2 MiB at 5120 × 1440, excluding the main technique's buffers and ReShade's own resources.
 
 ## License
 
