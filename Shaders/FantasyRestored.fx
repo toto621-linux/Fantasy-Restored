@@ -1,4 +1,4 @@
-// Fantasy Restored 5.4 — configurable SDR anime/fantasy post-process
+// Fantasy Restored 5.4.2 — configurable SDR anime/fantasy post-process
 // SPDX-License-Identifier: MIT
 #include "ReShade.fxh"
 namespace FantasyRestored {
@@ -178,6 +178,7 @@ uniform float DoFFocusDepth < ui_category="98 Depth of Field"; ui_label="Manual 
 uniform float DoFFocusRange < ui_category="98 Depth of Field"; ui_label="Sharp focus range"; ui_tooltip="Relative depth tolerance around focus. Higher keeps a larger region sharp."; ui_type="slider"; ui_min=0.01; ui_max=1; ui_step=0.01; > = 0.20;
 uniform bool DoFNear < ui_category="98 Depth of Field"; ui_label="Near blur"; ui_tooltip="Blur foreground objects nearer than the focus band."; ui_type="checkbox"; > = true;
 uniform bool DoFFar < ui_category="98 Depth of Field"; ui_label="Far blur"; ui_tooltip="Blur background objects farther than the focus band."; ui_type="checkbox"; > = true;
+uniform bool DoFProtectFarDepth < ui_category="98 Depth of Field"; ui_label="Protect foreground depth gaps"; ui_tooltip="Skips far blur at saturated depth and reduces it on nearby values surrounded by foreground. May also keep sky without valid depth sharp."; ui_type="checkbox"; > = true;
 uniform float DoFNearTransition < ui_category="98 Depth of Field"; ui_label="Near blur transition"; ui_tooltip="Relative distance beyond the focus band before maximum near blur."; ui_type="slider"; ui_min=0.02; ui_max=2; ui_step=0.01; > = 0.55;
 uniform float DoFFarTransition < ui_category="98 Depth of Field"; ui_label="Far blur transition"; ui_tooltip="Relative distance beyond the focus band before maximum far blur."; ui_type="slider"; ui_min=0.02; ui_max=10; ui_step=0.01; > = 1.50;
 uniform float DoFNearRadius < ui_category="98 Depth of Field"; ui_label="Near blur radius"; ui_tooltip="Maximum radius in 1080p pixels, scaled with image height."; ui_type="slider"; ui_min=0; ui_max=24; ui_step=0.5; > = 4.0;
@@ -1275,9 +1276,11 @@ sampler DoFFocusS { Texture=DoFFocusTex; AddressU=CLAMP; AddressV=CLAMP; };
 texture DoFData { Width=BUFFER_WIDTH/2; Height=BUFFER_HEIGHT/2; Format=RGBA16F; };
 texture DoFFarTex { Width=BUFFER_WIDTH/2; Height=BUFFER_HEIGHT/2; Format=RGBA16F; };
 texture DoFNearTex { Width=BUFFER_WIDTH/2; Height=BUFFER_HEIGHT/2; Format=RGBA16F; };
+texture DoFFarGuard { Width=(BUFFER_WIDTH+7)/8; Height=(BUFFER_HEIGHT+7)/8; Format=R16F; };
 sampler DoFDataS { Texture=DoFData; MinFilter=POINT; MagFilter=POINT; MipFilter=POINT; AddressU=CLAMP; AddressV=CLAMP; };
 sampler DoFFarS { Texture=DoFFarTex; MinFilter=POINT; MagFilter=POINT; MipFilter=POINT; AddressU=CLAMP; AddressV=CLAMP; };
 sampler DoFNearS { Texture=DoFNearTex; AddressU=CLAMP; AddressV=CLAMP; };
+sampler DoFFarGuardS { Texture=DoFFarGuard; AddressU=CLAMP; AddressV=CLAMP; };
 float4 FRFocusPS(float4 pos:SV_Position,float2 uv:TEXCOORD):SV_Target {
  float z=DoFFocusDepth;
  if(DoFAutoFocus && DoFStrength>0.0) {
@@ -1297,13 +1300,52 @@ float FRFarCoC(float z,float focus) {
  float delta=(z-focus)/max(focus,0.0001);
  return smoothstep(0.0,DoFFarTransition,max(delta-DoFFocusRange,0.0));
 }
+float FRNearSupport(float2 uv,float2 direction,float nearLimit) {
+ float depth=ReShade::GetLinearizedDepth(saturate(uv+direction*32.0));
+ depth=min(depth,ReShade::GetLinearizedDepth(saturate(uv+direction*80.0)));
+ depth=min(depth,ReShade::GetLinearizedDepth(saturate(uv+direction*160.0)));
+ return 1.0-smoothstep(nearLimit*0.8,nearLimit*1.15,depth);
+}
+float4 FRFarGuardPS(float4 pos:SV_Position,float2 uv:TEXCOORD):SV_Target {
+ if(!DoFProtectFarDepth || !DoFFar || DoFFarRadius<=0.0 || DoFStrength<=0.0)
+  return 0.0;
+ float focus=tex2D(DoFFocusS,float2(0.5,0.5)).r;
+ float nearLimit=min(focus*(1.0+DoFFocusRange),0.26);
+ float2 pixel=Px(1.0);
+ float left=FRNearSupport(uv,float2(-pixel.x,0),nearLimit);
+ float right=FRNearSupport(uv,float2(pixel.x,0),nearLimit);
+ float top=FRNearSupport(uv,float2(0,-pixel.y),nearLimit);
+ float bottom=FRNearSupport(uv,float2(0,pixel.y),nearLimit);
+ float support=max(min(left,right),min(top,bottom));
+ // A gap touching the bottom edge cannot have a lower neighbor on screen.
+ float lowerEdge=1.0-smoothstep(110.0,160.0,(1.0-uv.y)/pixel.y);
+ if(lowerEdge>0.0 && support<1.0 && top>0.0) {
+  float lateral=max(left,right);
+  if(lateral<top) {
+   float2 diagonal=float2(pixel.x,-pixel.y)*0.707107;
+   float upperLeft=FRNearSupport(uv,float2(-diagonal.x,diagonal.y),nearLimit);
+   float upperRight=FRNearSupport(uv,diagonal,nearLimit);
+   lateral=max(lateral,max(upperLeft,upperRight));
+  }
+  support=max(support,min(top,lateral)*lowerEdge);
+ }
+ return float4(support,0,0,1);
+}
+float FRFarConfidence(float2 uv,float z) {
+ if(!DoFProtectFarDepth || z<=0.80)
+  return 1.0;
+ // Saturated depth can represent a cleared pixel rather than a surface.
+ // Reject it even if a gap is too large to find a nearby foreground sample.
+ if(z>=0.992)
+  return 0.0;
+ float support=tex2Dlod(DoFFarGuardS,float4(uv,0,0)).r;
+ float contextual=1.0-smoothstep(0.80,0.88,z)*support;
+ return contextual*(1.0-smoothstep(0.96,0.992,z));
+}
 float FRNearCoC(float z,float focus) {
  if(!DoFNear) return 0.0;
  float delta=(z-focus)/max(focus,0.0001);
  return smoothstep(0.0,DoFNearTransition,max(-delta-DoFFocusRange,0.0));
-}
-float FRCoC(float z,float focus) {
- return FRFarCoC(z,focus)-FRNearCoC(z,focus);
 }
 float4 FRPrepareDoFPS(float4 pos:SV_Position,float2 uv:TEXCOORD):SV_Target {
  if(DoFStrength<=0.0) return 0;
@@ -1369,7 +1411,7 @@ float2 FRTap(int i,int count) {
 float4 FRFarDoFPS(float4 pos:SV_Position,float2 uv:TEXCOORD):SV_Target {
  if(DoFStrength<=0.0 || !DoFFar || DoFFarRadius<=0.0) return 0;
  float4 center=tex2D(DoFDataS,uv);float focus=tex2D(DoFFocusS,float2(0.5,0.5)).r;
- float coc=FRFarCoC(center.a,focus);
+ float coc=FRFarCoC(center.a,focus)*FRFarConfidence(uv,center.a);
  if(coc<0.005) return float4(center.rgb,center.a);
  float3 sum=center.rgb;float weightSum=1.0;
  int count=DoFQuality==0?12:(DoFQuality==1?24:40);
@@ -1378,10 +1420,11 @@ float4 FRFarDoFPS(float4 pos:SV_Position,float2 uv:TEXCOORD):SV_Target {
  float cocTolerance=max(coc*0.5,0.001);
  [loop] for(int i=0;i<40;i++) {
   if(i>=count) break;
-  float4 sampleValue=tex2Dlod(DoFDataS,float4(saturate(uv+FRTap(i,count)*radius),0,0));
+  float2 tapUV=saturate(uv+FRTap(i,count)*radius);
+  float4 sampleValue=tex2Dlod(DoFDataS,float4(tapUV,0,0));
   float weight=smoothstep(center.a-tolerance*2.0,center.a-tolerance,sampleValue.a);
   // Never spread a sharp/foreground layer over the defocused background.
-  weight*=smoothstep(0.0,cocTolerance,FRFarCoC(sampleValue.a,focus));
+  weight*=smoothstep(0.0,cocTolerance,FRFarCoC(sampleValue.a,focus)*FRFarConfidence(tapUV,sampleValue.a));
   sum+=sampleValue.rgb*weight;weightSum+=weight;
  }
  return float4(sum/weightSum,center.a);
@@ -1418,7 +1461,13 @@ float4 FRDoFCompositePS(float4 pos:SV_Position,float2 uv:TEXCOORD):SV_Target {
   if(DoFProtectHUD && max(MaskRect(uv,RectA),MaskRect(uv,RectB))>=1.0) return original;
  }
  float z=ReShade::GetLinearizedDepth(uv),focus=tex2D(DoFFocusS,float2(0.5,0.5)).r;
- float coc=FRCoC(z,focus);
+ float farCoC=FRFarCoC(z,focus);
+ if(DoFFarRadius>0.0 && farCoC>0.0)
+  farCoC*=FRFarConfidence(uv,z);
+ else
+  farCoC=0.0;
+ float nearCoC=DoFNearRadius>0.0?FRNearCoC(z,focus):0.0;
+ float coc=farCoC-nearCoC;
  if(DoFDebug) return float4(max(-coc,0.0),1.0-abs(coc),max(coc,0.0),original.a);
  // Only reconstruct FAR where it contributes to the output. This avoids four
  // depth-aware texture reads and exponentials on sharp and foreground pixels.
@@ -1433,6 +1482,7 @@ float4 FRDoFCompositePS(float4 pos:SV_Position,float2 uv:TEXCOORD):SV_Target {
    float4 value=tex2Dlod(DoFFarS,float4(p,0,0));
    float bilinear=(x==0?1.0-fracGrid.x:fracGrid.x)*(y==0?1.0-fracGrid.y:fracGrid.y);
    float weight=bilinear*exp2(-abs(value.a-z)/depthTolerance*4.0);
+   weight*=FRFarConfidence(p,value.a);
    farColor+=value.rgb*weight;total+=weight;
   }}
   farColor=total>0.0001?farColor/max(total,0.0001):original.rgb;
@@ -1452,6 +1502,7 @@ float4 FRDoFCompositePS(float4 pos:SV_Position,float2 uv:TEXCOORD):SV_Target {
 technique FantasyRestoredDoF < ui_label="Fantasy Restored - Depth of Field"; ui_tooltip="Place AFTER Fantasy Restored. Near/far half-resolution disk blur with depth rejection. Requires correctly configured depth. Optional: disabled until you enable this technique."; >
 {
  pass Focus { VertexShader=PostProcessVS; PixelShader=FantasyRestored::FRFocusPS; RenderTarget=FantasyRestored::DoFFocusTex; }
+ pass FarDepthGuard { VertexShader=PostProcessVS; PixelShader=FantasyRestored::FRFarGuardPS; RenderTarget=FantasyRestored::DoFFarGuard; }
  pass Prepare { VertexShader=PostProcessVS; PixelShader=FantasyRestored::FRPrepareDoFPS; RenderTarget=FantasyRestored::DoFData; }
  pass FarBlur { VertexShader=PostProcessVS; PixelShader=FantasyRestored::FRFarDoFPS; RenderTarget=FantasyRestored::DoFFarTex; }
  pass NearBlur { VertexShader=PostProcessVS; PixelShader=FantasyRestored::FRNearDoFPS; RenderTarget=FantasyRestored::DoFNearTex; }
